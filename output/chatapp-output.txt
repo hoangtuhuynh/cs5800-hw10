@@ -1,0 +1,57 @@
+=== Sending messages through the mediator ===
+
+=== Chat histories after sending ===
+--- Chat history for Alice ---
+[2026-11-15 22:42:30] Alice -> Bob: Hey Bob, want to grab lunch?
+[2026-11-15 22:42:30] Bob -> Alice: Sure Alice! Noon works for me.
+[2026-11-15 22:42:30] Alice -> Bob, Charlie: Team update: demo is Friday.
+[2026-11-15 22:42:30] Charlie -> Alice: Thanks Alice, I'll prepare slides.
+
+--- Chat history for Bob ---
+[2026-11-15 22:42:30] Alice -> Bob: Hey Bob, want to grab lunch?
+[2026-11-15 22:42:30] Bob -> Alice: Sure Alice! Noon works for me.
+[2026-11-15 22:42:30] Alice -> Bob, Charlie: Team update: demo is Friday.
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, can you review my PR?
+
+--- Chat history for Charlie ---
+[2026-11-15 22:42:30] Alice -> Bob, Charlie: Team update: demo is Friday.
+[2026-11-15 22:42:30] Charlie -> Alice: Thanks Alice, I'll prepare slides.
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, can you review my PR?
+
+=== Alice undoes her last message (team update) ===
+--- Chat history for Alice ---
+[2026-11-15 22:42:30] Alice -> Bob: Hey Bob, want to grab lunch?
+[2026-11-15 22:42:30] Bob -> Alice: Sure Alice! Noon works for me.
+[2026-11-15 22:42:30] Charlie -> Alice: Thanks Alice, I'll prepare slides.
+
+--- Chat history for Bob ---
+[2026-11-15 22:42:30] Alice -> Bob: Hey Bob, want to grab lunch?
+[2026-11-15 22:42:30] Bob -> Alice: Sure Alice! Noon works for me.
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, can you review my PR?
+
+--- Chat history for Charlie ---
+[2026-11-15 22:42:30] Charlie -> Alice: Thanks Alice, I'll prepare slides.
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, can you review my PR?
+
+=== Charlie blocks Bob, then Bob messages Charlie ===
+
+Charlie's history (Bob's blocked message should be missing):
+--- Chat history for Charlie ---
+[2026-11-15 22:42:30] Charlie -> Alice: Thanks Alice, I'll prepare slides.
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, can you review my PR?
+[2026-11-15 22:42:30] Charlie -> Alice: Alice, Bob is blocked on my side.
+
+Bob still has his outgoing message:
+--- Chat history for Bob ---
+[2026-11-15 22:42:30] Alice -> Bob: Hey Bob, want to grab lunch?
+[2026-11-15 22:42:30] Bob -> Alice: Sure Alice! Noon works for me.
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, can you review my PR?
+[2026-11-15 22:42:30] Bob -> Charlie: Charlie, did you see my PR comment?
+
+=== Iterate Alice's history for messages involving Bob ===
+[2026-11-15 22:42:30] Alice -> Bob: Hey Bob, want to grab lunch?
+[2026-11-15 22:42:30] Bob -> Alice: Sure Alice! Noon works for me.
+
+=== Iterate Charlie's history for messages involving Alice ===
+[2026-11-15 22:42:30] Charlie -> Alice: Thanks Alice, I'll prepare slides.
+[2026-11-15 22:42:30] Charlie -> Alice: Alice, Bob is blocked on my side.

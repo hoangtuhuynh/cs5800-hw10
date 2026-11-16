@@ -1,0 +1,1012 @@
+========== src/main/java/chatapp/ChatAppDriver.java ==========
+package chatapp;
+
+import java.util.Iterator;
+
+public class ChatAppDriver {
+    public static void main(String[] args) {
+        ChatServer server = new ChatServer();
+
+        User alice = new User("Alice");
+        User bob = new User("Bob");
+        User charlie = new User("Charlie");
+
+        server.registerUser(alice);
+        server.registerUser(bob);
+        server.registerUser(charlie);
+
+        alice.setChatServer(server);
+        bob.setChatServer(server);
+        charlie.setChatServer(server);
+
+        System.out.println("=== Sending messages through the mediator ===");
+        alice.sendMessage("Hey Bob, want to grab lunch?", bob);
+        bob.sendMessage("Sure Alice! Noon works for me.", alice);
+        alice.sendMessage("Team update: demo is Friday.", bob, charlie);
+        charlie.sendMessage("Thanks Alice, I'll prepare slides.", alice);
+        bob.sendMessage("Charlie, can you review my PR?", charlie);
+
+        System.out.println("\n=== Chat histories after sending ===");
+        alice.printChatHistory();
+        System.out.println();
+        bob.printChatHistory();
+        System.out.println();
+        charlie.printChatHistory();
+
+        System.out.println("\n=== Alice undoes her last message (team update) ===");
+        alice.undoLastMessage();
+        alice.printChatHistory();
+        System.out.println();
+        bob.printChatHistory();
+        System.out.println();
+        charlie.printChatHistory();
+
+        System.out.println("\n=== Charlie blocks Bob, then Bob messages Charlie ===");
+        charlie.blockUser(bob);
+        bob.sendMessage("Charlie, did you see my PR comment?", charlie);
+        charlie.sendMessage("Alice, Bob is blocked on my side.", alice);
+
+        System.out.println("\nCharlie's history (Bob's blocked message should be missing):");
+        charlie.printChatHistory();
+        System.out.println("\nBob still has his outgoing message:");
+        bob.printChatHistory();
+
+        System.out.println("\n=== Iterate Alice's history for messages involving Bob ===");
+        Iterator<Message> withBob = alice.iterator(bob);
+        while (withBob.hasNext()) {
+            System.out.println(withBob.next());
+        }
+
+        System.out.println("\n=== Iterate Charlie's history for messages involving Alice ===");
+        Iterator<Message> withAlice = charlie.iterator(alice);
+        while (withAlice.hasNext()) {
+            System.out.println(withAlice.next());
+        }
+    }
+}
+
+========== src/main/java/chatapp/ChatHistory.java ==========
+package chatapp;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+
+public class ChatHistory implements IterableByUser {
+    private final List<Message> messages = new ArrayList<>();
+
+    public void addMessage(Message message) {
+        if (message == null) {
+            throw new IllegalArgumentException("message cannot be null");
+        }
+        messages.add(message);
+    }
+
+    public Message getLastMessage() {
+        if (messages.isEmpty()) {
+            return null;
+        }
+        return messages.get(messages.size() - 1);
+    }
+
+    public boolean removeMessageMatching(MessageMemento memento) {
+        if (memento == null) {
+            return false;
+        }
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (messages.get(i).matchesMemento(memento)) {
+                messages.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public List<Message> getMessages() {
+        return Collections.unmodifiableList(messages);
+    }
+
+    public int size() {
+        return messages.size();
+    }
+
+    public boolean isEmpty() {
+        return messages.isEmpty();
+    }
+
+    @Override
+    public Iterator<Message> iterator(User userToSearchWith) {
+        return new SearchMessagesByUser(messages, userToSearchWith);
+    }
+}
+
+========== src/main/java/chatapp/ChatServer.java ==========
+package chatapp;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+public class ChatServer {
+    private final Map<String, User> users = new HashMap<>();
+    private final Map<String, Set<String>> blockedUsers = new HashMap<>();
+
+    public void registerUser(User user) {
+        if (user == null) {
+            throw new IllegalArgumentException("user cannot be null");
+        }
+        users.put(user.getName(), user);
+        blockedUsers.putIfAbsent(user.getName(), new HashSet<>());
+    }
+
+    public void unregisterUser(User user) {
+        if (user == null) {
+            throw new IllegalArgumentException("user cannot be null");
+        }
+        users.remove(user.getName());
+        blockedUsers.remove(user.getName());
+        for (Set<String> blocked : blockedUsers.values()) {
+            blocked.remove(user.getName());
+        }
+    }
+
+    public boolean isRegistered(User user) {
+        return user != null && users.containsKey(user.getName());
+    }
+
+    public void blockUser(User blocker, User blocked) {
+        requireRegistered(blocker);
+        requireRegistered(blocked);
+        if (blocker.equals(blocked)) {
+            throw new IllegalArgumentException("a user cannot block themselves");
+        }
+        blockedUsers.get(blocker.getName()).add(blocked.getName());
+    }
+
+    public void unblockUser(User blocker, User blocked) {
+        requireRegistered(blocker);
+        if (blocked == null) {
+            throw new IllegalArgumentException("blocked user cannot be null");
+        }
+        blockedUsers.get(blocker.getName()).remove(blocked.getName());
+    }
+
+    public boolean isBlocked(User recipient, User sender) {
+        if (recipient == null || sender == null) {
+            return false;
+        }
+        Set<String> blocked = blockedUsers.get(recipient.getName());
+        return blocked != null && blocked.contains(sender.getName());
+    }
+
+    public void sendMessage(User sender, List<User> recipients, String content) {
+        requireRegistered(sender);
+        if (recipients == null || recipients.isEmpty()) {
+            throw new IllegalArgumentException("recipients cannot be null or empty");
+        }
+        if (content == null) {
+            throw new IllegalArgumentException("content cannot be null");
+        }
+
+        for (User recipient : recipients) {
+            requireRegistered(recipient);
+            if (recipient.equals(sender)) {
+                throw new IllegalArgumentException("cannot send a message to yourself");
+            }
+        }
+
+        Message message = new Message(sender, recipients, content);
+        sender.storeSentMessage(message);
+
+        for (User recipient : recipients) {
+            if (!isBlocked(recipient, sender)) {
+                recipient.receiveMessage(message);
+            }
+        }
+    }
+
+    public void undoLastMessage(User sender) {
+        requireRegistered(sender);
+        MessageMemento memento = sender.getLastMessageMemento();
+        if (memento == null) {
+            return;
+        }
+
+        Message lastSent = sender.getChatHistory().getLastMessage();
+        if (lastSent == null || !lastSent.matchesMemento(memento) || !lastSent.getSender().equals(sender)) {
+            // Find the last message this user actually sent
+            lastSent = null;
+            List<Message> history = sender.getChatHistory().getMessages();
+            for (int i = history.size() - 1; i >= 0; i--) {
+                Message candidate = history.get(i);
+                if (candidate.getSender().equals(sender) && candidate.matchesMemento(memento)) {
+                    lastSent = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (lastSent == null) {
+            sender.clearLastMessageMemento();
+            return;
+        }
+
+        sender.getChatHistory().removeMessageMatching(memento);
+        for (User recipient : lastSent.getRecipients()) {
+            if (isRegistered(recipient)) {
+                recipient.getChatHistory().removeMessageMatching(memento);
+            }
+        }
+        sender.clearLastMessageMemento();
+    }
+
+    private void requireRegistered(User user) {
+        if (user == null) {
+            throw new IllegalArgumentException("user cannot be null");
+        }
+        if (!users.containsKey(user.getName())) {
+            throw new IllegalArgumentException(user.getName() + " is not registered");
+        }
+    }
+}
+
+========== src/main/java/chatapp/IterableByUser.java ==========
+package chatapp;
+
+import java.util.Iterator;
+
+public interface IterableByUser {
+    Iterator<Message> iterator(User userToSearchWith);
+}
+
+========== src/main/java/chatapp/Message.java ==========
+package chatapp;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+public class Message {
+    private static final DateTimeFormatter FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    private final User sender;
+    private final List<User> recipients;
+    private final LocalDateTime timestamp;
+    private final String content;
+
+    public Message(User sender, List<User> recipients, String content) {
+        this(sender, recipients, content, LocalDateTime.now());
+    }
+
+    public Message(User sender, List<User> recipients, String content, LocalDateTime timestamp) {
+        if (sender == null) {
+            throw new IllegalArgumentException("sender cannot be null");
+        }
+        if (recipients == null || recipients.isEmpty()) {
+            throw new IllegalArgumentException("recipients cannot be null or empty");
+        }
+        if (content == null) {
+            throw new IllegalArgumentException("content cannot be null");
+        }
+        if (timestamp == null) {
+            throw new IllegalArgumentException("timestamp cannot be null");
+        }
+        this.sender = sender;
+        this.recipients = List.copyOf(recipients);
+        this.content = content;
+        this.timestamp = timestamp;
+    }
+
+    public User getSender() {
+        return sender;
+    }
+
+    public List<User> getRecipients() {
+        return recipients;
+    }
+
+    public LocalDateTime getTimestamp() {
+        return timestamp;
+    }
+
+    public String getContent() {
+        return content;
+    }
+
+    public boolean involves(User user) {
+        if (user == null) {
+            return false;
+        }
+        return sender.equals(user) || recipients.contains(user);
+    }
+
+    public MessageMemento createMemento() {
+        return new MessageMemento(content, timestamp);
+    }
+
+    public boolean matchesMemento(MessageMemento memento) {
+        return memento != null
+                && Objects.equals(content, memento.getContent())
+                && Objects.equals(timestamp, memento.getTimestamp());
+    }
+
+    @Override
+    public String toString() {
+        String recipientNames = recipients.stream()
+                .map(User::getName)
+                .collect(Collectors.joining(", "));
+        return String.format("[%s] %s -> %s: %s",
+                timestamp.format(FORMATTER),
+                sender.getName(),
+                recipientNames,
+                content);
+    }
+
+}
+
+========== src/main/java/chatapp/MessageMemento.java ==========
+package chatapp;
+
+import java.time.LocalDateTime;
+import java.util.Objects;
+
+public class MessageMemento {
+    private final String content;
+    private final LocalDateTime timestamp;
+
+    public MessageMemento(String content, LocalDateTime timestamp) {
+        if (content == null) {
+            throw new IllegalArgumentException("content cannot be null");
+        }
+        if (timestamp == null) {
+            throw new IllegalArgumentException("timestamp cannot be null");
+        }
+        this.content = content;
+        this.timestamp = timestamp;
+    }
+
+    public String getContent() {
+        return content;
+    }
+
+    public LocalDateTime getTimestamp() {
+        return timestamp;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof MessageMemento that)) {
+            return false;
+        }
+        return Objects.equals(content, that.content)
+                && Objects.equals(timestamp, that.timestamp);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(content, timestamp);
+    }
+
+    @Override
+    public String toString() {
+        return "MessageMemento{content='" + content + "', timestamp=" + timestamp + '}';
+    }
+}
+
+========== src/main/java/chatapp/SearchMessagesByUser.java ==========
+package chatapp;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
+
+public class SearchMessagesByUser implements Iterator<Message> {
+    private final List<Message> matchingMessages;
+    private int index;
+
+    public SearchMessagesByUser(List<Message> messages, User userToSearchWith) {
+        if (messages == null) {
+            throw new IllegalArgumentException("messages cannot be null");
+        }
+        if (userToSearchWith == null) {
+            throw new IllegalArgumentException("userToSearchWith cannot be null");
+        }
+        matchingMessages = new ArrayList<>();
+        for (Message message : messages) {
+            if (message.involves(userToSearchWith)) {
+                matchingMessages.add(message);
+            }
+        }
+        index = 0;
+    }
+
+    @Override
+    public boolean hasNext() {
+        return index < matchingMessages.size();
+    }
+
+    @Override
+    public Message next() {
+        if (!hasNext()) {
+            throw new NoSuchElementException("No more messages for this user");
+        }
+        return matchingMessages.get(index++);
+    }
+}
+
+========== src/main/java/chatapp/User.java ==========
+package chatapp;
+
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.Objects;
+
+public class User implements IterableByUser {
+    private final String name;
+    private final ChatHistory chatHistory = new ChatHistory();
+    private ChatServer chatServer;
+    private MessageMemento lastMessageMemento;
+
+    public User(String name) {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("name cannot be null or blank");
+        }
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public ChatHistory getChatHistory() {
+        return chatHistory;
+    }
+
+    public void setChatServer(ChatServer chatServer) {
+        this.chatServer = chatServer;
+    }
+
+    public ChatServer getChatServer() {
+        return chatServer;
+    }
+
+    public void sendMessage(String content, User... recipients) {
+        requireServer();
+        if (recipients == null || recipients.length == 0) {
+            throw new IllegalArgumentException("recipients cannot be null or empty");
+        }
+        chatServer.sendMessage(this, Arrays.asList(recipients), content);
+    }
+
+    public void receiveMessage(Message message) {
+        if (message == null) {
+            throw new IllegalArgumentException("message cannot be null");
+        }
+        chatHistory.addMessage(message);
+    }
+
+    public void storeSentMessage(Message message) {
+        if (message == null) {
+            throw new IllegalArgumentException("message cannot be null");
+        }
+        lastMessageMemento = message.createMemento();
+        chatHistory.addMessage(message);
+    }
+
+    public void undoLastMessage() {
+        requireServer();
+        chatServer.undoLastMessage(this);
+    }
+
+    public void blockUser(User user) {
+        requireServer();
+        chatServer.blockUser(this, user);
+    }
+
+    public void unblockUser(User user) {
+        requireServer();
+        chatServer.unblockUser(this, user);
+    }
+
+    public MessageMemento getLastMessageMemento() {
+        return lastMessageMemento;
+    }
+
+    public void clearLastMessageMemento() {
+        lastMessageMemento = null;
+    }
+
+    public void printChatHistory() {
+        System.out.println("--- Chat history for " + name + " ---");
+        if (chatHistory.isEmpty()) {
+            System.out.println("(empty)");
+            return;
+        }
+        for (Message message : chatHistory.getMessages()) {
+            System.out.println(message);
+        }
+    }
+
+    @Override
+    public Iterator<Message> iterator(User userToSearchWith) {
+        return chatHistory.iterator(userToSearchWith);
+    }
+
+    private void requireServer() {
+        if (chatServer == null) {
+            throw new IllegalStateException(name + " is not connected to a chat server");
+        }
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof User that)) {
+            return false;
+        }
+        return Objects.equals(name, that.name);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(name);
+    }
+
+    @Override
+    public String toString() {
+        return name;
+    }
+}
+
+========== src/test/java/chatapp/ChatAppDriverTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class ChatAppDriverTest {
+    private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+    private PrintStream originalOut;
+
+    @BeforeEach
+    void captureOutput() {
+        originalOut = System.out;
+        System.setOut(new PrintStream(output));
+    }
+
+    @AfterEach
+    void restoreOutput() {
+        System.setOut(originalOut);
+    }
+
+    @Test
+    void driverDemonstratesMediatorMementoAndIterator() {
+        ChatAppDriver.main(new String[0]);
+        String printed = output.toString();
+
+        assertTrue(printed.contains("Sending messages through the mediator"));
+        assertTrue(printed.contains("Alice undoes her last message"));
+        assertTrue(printed.contains("Charlie blocks Bob"));
+        assertTrue(printed.contains("Iterate Alice's history for messages involving Bob"));
+        assertTrue(printed.contains("Alice -> Bob: Hey Bob, want to grab lunch?"));
+        assertTrue(printed.contains("Charlie -> Alice: Alice, Bob is blocked on my side."));
+        assertTrue(printed.contains("Bob -> Charlie: Charlie, can you review my PR?"));
+    }
+}
+
+========== src/test/java/chatapp/ChatHistoryTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class ChatHistoryTest {
+    private ChatHistory history;
+    private User alice;
+    private User bob;
+    private User charlie;
+    private Message aliceToBob;
+    private Message bobToAlice;
+    private Message aliceToCharlie;
+
+    @BeforeEach
+    void setUp() {
+        history = new ChatHistory();
+        alice = new User("Alice");
+        bob = new User("Bob");
+        charlie = new User("Charlie");
+        aliceToBob = new Message(alice, List.of(bob), "hi bob");
+        bobToAlice = new Message(bob, List.of(alice), "hi alice");
+        aliceToCharlie = new Message(alice, List.of(charlie), "hi charlie");
+    }
+
+    @Test
+    void addsMessagesAndReturnsLast() {
+        assertNull(history.getLastMessage());
+        history.addMessage(aliceToBob);
+        history.addMessage(bobToAlice);
+        assertEquals(bobToAlice, history.getLastMessage());
+        assertEquals(2, history.size());
+    }
+
+    @Test
+    void removesMessageMatchingMemento() {
+        history.addMessage(aliceToBob);
+        history.addMessage(bobToAlice);
+        assertTrue(history.removeMessageMatching(aliceToBob.createMemento()));
+        assertEquals(List.of(bobToAlice), history.getMessages());
+        assertFalse(history.removeMessageMatching(aliceToBob.createMemento()));
+    }
+
+    @Test
+    void iteratorFiltersByUser() {
+        history.addMessage(aliceToBob);
+        history.addMessage(bobToAlice);
+        history.addMessage(aliceToCharlie);
+
+        Iterator<Message> withBob = history.iterator(bob);
+        List<Message> found = new ArrayList<>();
+        while (withBob.hasNext()) {
+            found.add(withBob.next());
+        }
+
+        assertEquals(List.of(aliceToBob, bobToAlice), found);
+    }
+
+    @Test
+    void rejectsNullMessage() {
+        assertThrows(IllegalArgumentException.class, () -> history.addMessage(null));
+    }
+}
+
+========== src/test/java/chatapp/ChatServerTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class ChatServerTest {
+    private ChatServer server;
+    private User alice;
+    private User bob;
+    private User charlie;
+
+    @BeforeEach
+    void setUp() {
+        server = new ChatServer();
+        alice = new User("Alice");
+        bob = new User("Bob");
+        charlie = new User("Charlie");
+        server.registerUser(alice);
+        server.registerUser(bob);
+        server.registerUser(charlie);
+        alice.setChatServer(server);
+        bob.setChatServer(server);
+        charlie.setChatServer(server);
+    }
+
+    @Test
+    void registerAndUnregisterUsers() {
+        User dana = new User("Dana");
+        assertFalse(server.isRegistered(dana));
+        server.registerUser(dana);
+        assertTrue(server.isRegistered(dana));
+        server.unregisterUser(dana);
+        assertFalse(server.isRegistered(dana));
+    }
+
+    @Test
+    void sendMessageDeliversToAllRecipients() {
+        server.sendMessage(alice, List.of(bob, charlie), "group hello");
+
+        assertEquals(1, alice.getChatHistory().size());
+        assertEquals(1, bob.getChatHistory().size());
+        assertEquals(1, charlie.getChatHistory().size());
+        assertEquals("group hello", bob.getChatHistory().getLastMessage().getContent());
+    }
+
+    @Test
+    void blockedRecipientDoesNotReceiveMessage() {
+        server.blockUser(charlie, bob);
+        server.sendMessage(bob, List.of(charlie), "blocked?");
+
+        assertEquals(1, bob.getChatHistory().size());
+        assertTrue(charlie.getChatHistory().isEmpty());
+        assertTrue(server.isBlocked(charlie, bob));
+    }
+
+    @Test
+    void undoRemovesMessageFromSenderAndRecipients() {
+        server.sendMessage(alice, List.of(bob, charlie), "take this back");
+        server.undoLastMessage(alice);
+
+        assertTrue(alice.getChatHistory().isEmpty());
+        assertTrue(bob.getChatHistory().isEmpty());
+        assertTrue(charlie.getChatHistory().isEmpty());
+        assertEquals(null, alice.getLastMessageMemento());
+    }
+
+    @Test
+    void undoOnlyAffectsLastSentEvenIfLaterMessagesWereReceived() {
+        server.sendMessage(alice, List.of(bob), "first");
+        server.sendMessage(bob, List.of(alice), "reply");
+        server.sendMessage(alice, List.of(bob), "second");
+        server.sendMessage(bob, List.of(alice), "another reply");
+
+        server.undoLastMessage(alice);
+
+        assertEquals(3, alice.getChatHistory().size());
+        assertEquals("another reply", alice.getChatHistory().getLastMessage().getContent());
+        assertEquals(3, bob.getChatHistory().size());
+        assertFalse(bob.getChatHistory().getMessages().stream()
+                .anyMatch(message -> message.getContent().equals("second")));
+    }
+
+    @Test
+    void rejectsUnregisteredSender() {
+        User outsider = new User("Outsider");
+        outsider.setChatServer(server);
+        assertThrows(IllegalArgumentException.class,
+                () -> server.sendMessage(outsider, List.of(alice), "hi"));
+    }
+}
+
+========== src/test/java/chatapp/MessageMementoTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.time.LocalDateTime;
+import org.junit.jupiter.api.Test;
+
+class MessageMementoTest {
+    @Test
+    void storesContentAndTimestamp() {
+        LocalDateTime time = LocalDateTime.of(2026, 1, 1, 12, 0);
+        MessageMemento memento = new MessageMemento("undo me", time);
+
+        assertEquals("undo me", memento.getContent());
+        assertEquals(time, memento.getTimestamp());
+    }
+
+    @Test
+    void equalsByContentAndTimestamp() {
+        LocalDateTime time = LocalDateTime.of(2026, 1, 1, 12, 0);
+        MessageMemento first = new MessageMemento("same", time);
+        MessageMemento second = new MessageMemento("same", time);
+        MessageMemento different = new MessageMemento("other", time);
+
+        assertEquals(first, second);
+        assertEquals(first.hashCode(), second.hashCode());
+        assertNotEquals(first, different);
+    }
+
+    @Test
+    void rejectsNullFields() {
+        LocalDateTime time = LocalDateTime.now();
+        assertThrows(IllegalArgumentException.class, () -> new MessageMemento(null, time));
+        assertThrows(IllegalArgumentException.class, () -> new MessageMemento("x", null));
+    }
+}
+
+========== src/test/java/chatapp/MessageTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+class MessageTest {
+    private final User alice = new User("Alice");
+    private final User bob = new User("Bob");
+    private final User charlie = new User("Charlie");
+
+    @Test
+    void storesSenderRecipientsContentAndTimestamp() {
+        LocalDateTime time = LocalDateTime.of(2026, 11, 15, 10, 0);
+        Message message = new Message(alice, List.of(bob, charlie), "hello", time);
+
+        assertEquals(alice, message.getSender());
+        assertEquals(List.of(bob, charlie), message.getRecipients());
+        assertEquals("hello", message.getContent());
+        assertEquals(time, message.getTimestamp());
+    }
+
+    @Test
+    void involvesSenderOrRecipient() {
+        Message message = new Message(alice, List.of(bob), "hi");
+        assertTrue(message.involves(alice));
+        assertTrue(message.involves(bob));
+        assertFalse(message.involves(charlie));
+    }
+
+    @Test
+    void createMementoCapturesContentAndTimestamp() {
+        LocalDateTime time = LocalDateTime.of(2026, 11, 15, 11, 30);
+        Message message = new Message(alice, List.of(bob), "snapshot", time);
+        MessageMemento memento = message.createMemento();
+
+        assertEquals("snapshot", memento.getContent());
+        assertEquals(time, memento.getTimestamp());
+        assertTrue(message.matchesMemento(memento));
+    }
+
+    @Test
+    void rejectsInvalidConstruction() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Message(null, List.of(bob), "x"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Message(alice, List.of(), "x"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Message(alice, List.of(bob), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Message(alice, List.of(bob), "x", null));
+    }
+}
+
+========== src/test/java/chatapp/SearchMessagesByUserTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
+import java.util.NoSuchElementException;
+import org.junit.jupiter.api.Test;
+
+class SearchMessagesByUserTest {
+    @Test
+    void iteratesOnlyMessagesInvolvingGivenUser() {
+        User alice = new User("Alice");
+        User bob = new User("Bob");
+        User charlie = new User("Charlie");
+
+        Message withBob = new Message(alice, List.of(bob), "to bob");
+        Message withCharlie = new Message(alice, List.of(charlie), "to charlie");
+        Message fromBob = new Message(bob, List.of(alice), "from bob");
+
+        SearchMessagesByUser iterator =
+                new SearchMessagesByUser(List.of(withBob, withCharlie, fromBob), bob);
+
+        assertTrue(iterator.hasNext());
+        assertEquals(withBob, iterator.next());
+        assertTrue(iterator.hasNext());
+        assertEquals(fromBob, iterator.next());
+        assertFalse(iterator.hasNext());
+        assertThrows(NoSuchElementException.class, iterator::next);
+    }
+
+    @Test
+    void rejectsNullArguments() {
+        User bob = new User("Bob");
+        assertThrows(IllegalArgumentException.class,
+                () -> new SearchMessagesByUser(null, bob));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SearchMessagesByUser(List.of(), null));
+    }
+}
+
+========== src/test/java/chatapp/UserTest.java ==========
+package chatapp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class UserTest {
+    private ChatServer server;
+    private User alice;
+    private User bob;
+    private User charlie;
+
+    @BeforeEach
+    void setUp() {
+        server = new ChatServer();
+        alice = new User("Alice");
+        bob = new User("Bob");
+        charlie = new User("Charlie");
+        for (User user : List.of(alice, bob, charlie)) {
+            server.registerUser(user);
+            user.setChatServer(server);
+        }
+    }
+
+    @Test
+    void sendAndReceiveThroughMediator() {
+        alice.sendMessage("hello bob", bob);
+        assertEquals(1, alice.getChatHistory().size());
+        assertEquals(1, bob.getChatHistory().size());
+        assertEquals("hello bob", bob.getChatHistory().getLastMessage().getContent());
+    }
+
+    @Test
+    void undoLastMessageUsesMemento() {
+        alice.sendMessage("oops", bob);
+        assertEquals("oops", alice.getLastMessageMemento().getContent());
+        alice.undoLastMessage();
+        assertTrue(alice.getChatHistory().isEmpty());
+        assertTrue(bob.getChatHistory().isEmpty());
+    }
+
+    @Test
+    void blockUserPreventsIncomingMessages() {
+        bob.blockUser(alice);
+        alice.sendMessage("are you there?", bob);
+        assertEquals(1, alice.getChatHistory().size());
+        assertTrue(bob.getChatHistory().isEmpty());
+    }
+
+    @Test
+    void iteratorDelegatesToChatHistory() {
+        alice.sendMessage("hi bob", bob);
+        bob.sendMessage("hi alice", alice);
+        charlie.sendMessage("hi alice", alice);
+
+        Iterator<Message> withBob = alice.iterator(bob);
+        List<Message> found = new ArrayList<>();
+        while (withBob.hasNext()) {
+            found.add(withBob.next());
+        }
+
+        assertEquals(2, found.size());
+        assertTrue(found.stream().allMatch(message -> message.involves(bob)));
+        assertFalse(found.stream().anyMatch(message -> message.involves(charlie)
+                && !message.involves(bob)));
+    }
+
+    @Test
+    void rejectsBlankNameAndMissingServer() {
+        assertThrows(IllegalArgumentException.class, () -> new User(" "));
+        User dana = new User("Dana");
+        assertThrows(IllegalStateException.class, () -> dana.sendMessage("hi", alice));
+    }
+}
+
